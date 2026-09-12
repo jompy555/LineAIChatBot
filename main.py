@@ -33,7 +33,7 @@ def webhook():
             # ส่งหา Gemini AI
             gemini_client = genai.Client(api_key=gemini_key)
             response = gemini_client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=user_text
             )
             ai_answer = response.text
