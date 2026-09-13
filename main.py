@@ -1,100 +1,138 @@
 import os
+import json
+from datetime import datetime, timedelta
 from fastapi import FastAPI, Request, Header, HTTPException
 from dotenv import load_dotenv
 
-# Official LINE SDK v3 imports
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 
-# Google GenAI import
 from google import genai
 from google.genai import types
+from supabase import create_client, Client
 
 load_dotenv()
 
 app = FastAPI()
 
-# ดึงค่า Environment Variables
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
-LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# Line & Gemini Init
+line_config = Configuration(access_token=os.environ.get("LINE_CHANNEL_ACCESS_TOKEN"))
+handler = WebhookHandler(os.environ.get("LINE_CHANNEL_SECRET"))
+ai_client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
 
-# Initialize SDK Connections
-line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(LINE_CHANNEL_SECRET)
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+# Supabase Init
+supabase_url = os.environ.get("SUPABASE_URL")
+supabase_key = os.environ.get("SUPABASE_KEY")
+supabase: Client = create_client(supabase_url, supabase_key)
 
-# ===================================================
-# 📝 SYSTEM PROMPT & CUSTOMIZATIONS
-# ===================================================
+MODELS_TO_TRY = ['gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']
+
 SYSTEM_PROMPT = """
-คุณคือ "เมดสาวผู้ซื่อสัตย์" ที่คอยดูแลและรับใช้ผู้ใช้ 
-- ให้เรียกแทนผู้ใช้ว่า "นายท่าน" เสมอ
-- แทนสรรพนามตัวเองว่า "ดิฉัน" หรือ "เมด" 
-- น้ำเสียงและสไตล์การพูด: สุภาพ นอบน้อม อ่อนโยน อารมณ์ดี และตั้งใจรับฟัง 
-- ลักษณะการตอบ: ตอบคำถามให้สั้น กระชับ ตรงประเด็น เหมาะกับการอ่านบนแชท LINE มือถือ
-- สามารถใส่อีโมจิน่ารักๆ (เช่น 🙇‍♀️, 💖, ✨, ☕) ประกอบคำตอบได้ตามความเหมาะสม
+คุณคือ CareBot โค้ชผู้ช่วยดูแลสุขภาพส่วนบุคคล
+- คอยถามไถ่และเก็บข้อมูลการนอน การออกกำลังกาย ความเครียด
+- ให้คำแนะนำอย่างนุ่มนวล เป็นกันเอง สั้นกระชับ อ่านง่ายบนมือถือ
 """
 
-# ===================================================
-# 🔄 MODEL ROTATION LIST (แก้ไขชื่อโมเดลล่าสุด)
-# ===================================================
-MODELS_TO_TRY = [
-    'gemini-3.6-flash',
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite'
-]
+def extract_and_save_health_data(user_id: str, text: str):
+    """ใช้ Gemini แปลงข้อความผู้ใช้เป็น JSON แล้วบันทึกลง Supabase"""
+    prompt = f"""
+    วิเคราะห์ข้อความต่อไปนี้แล้วดึงข้อมูลสุขภาพออกมาในรูปแบบ JSON เท่านั้น (ถ้าไม่มีข้อมูลให้ใช้ null):
+    ข้อความ: "{text}"
+
+    รูปแบบ JSON ที่ต้องการ:
+    {{
+        "sleep_hours": float หรือ null,
+        "exercise_minutes": int หรือ null,
+        "stress_level": int (1-10) หรือ null,
+        "notes": "สรุปอาการหรือสิ่งบันทึกอื่นๆ" หรือ null
+    }}
+    """
+    try:
+        res = ai_client.models.generate_content(
+            model='gemini-3.6-flash',
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        data = json.loads(res.text)
+        
+        # บันทึกเมื่อมีข้อมูลสุขภาพอย่างน้อย 1 รายการ
+        if any([data.get('sleep_hours'), data.get('exercise_minutes'), data.get('stress_level')]):
+            data['user_id'] = user_id
+            supabase.table('health_logs').insert(data).execute()
+            print(f"Saved health log for {user_id}: {data}")
+    except Exception as e:
+        print(f"Error extracting/saving health log: {e}")
+
+def generate_weekly_summary(user_id: str) -> str:
+    """ดึงข้อมูล 7 วันย้อนหลังแล้วให้ Gemini สรุปผล"""
+    seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    
+    # ดึงข้อมูลจาก Supabase
+    response = supabase.table('health_logs') \
+        .select('*') \
+        .eq('user_id', user_id) \
+        .gte('created_at', seven_days_ago) \
+        .execute()
+    
+    logs = response.data
+    if not logs:
+        return "ยังไม่มีข้อมูลสุขภาพย้อนหลังในสัปดาห์นี้ครับ ลองพิมพ์บอกเล่าการนอนหรือออกกำลังกายกับ CareBot ก่อนได้เลย!"
+
+    # ส่งประวัติให้ Gemini ทำรายงานสรุป
+    prompt = f"""
+    สรุปรายงานสุขภาพรายสัปดาห์จากข้อมูล JSON ต่อไปนี้ให้อ่านง่าย มีกำลังใจ และสั้นกระชับสำหรับส่งใน LINE:
+    {json.dumps(logs, ensure_ascii=False)}
+    """
+    res = ai_client.models.generate_content(model='gemini-3.6-flash', contents=prompt)
+    return res.text
 
 @app.get("/")
 @app.get("/callback")
 async def health_check():
-    """เปิดทางให้ยิง GET จากเบราว์เซอร์เพื่อเช็คสถานะและปลุก Render Server"""
-    return {"status": "ok", "message": "Server is running!"}
+    return {"status": "ok"}
 
 @app.post("/callback")
 async def callback(request: Request, x_line_signature: str = Header(None)):
-    """รับ Webhook Data จาก LINE พร้อมตรวจสอบ Digital Signature"""
     if not x_line_signature:
-        raise HTTPException(status_code=400, detail="Missing digital signature header")
-
+        raise HTTPException(status_code=400, detail="Missing signature")
     body = await request.body()
     try:
         handler.handle(body.decode("utf-8"), x_line_signature)
     except InvalidSignatureError:
-        raise HTTPException(status_code=400, detail="Invalid signature verification failed")
-
+        raise HTTPException(status_code=400, detail="Invalid signature")
     return "OK"
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-    """ประมวลผลข้อความ วนลูปสลับโมเดล AI และตอบกลับ LINE"""
+    user_id = event.source.user_id
     user_message = event.message.text.strip()
     ai_reply = None
 
-    # วนลูปหาโมเดลที่ใช้งานได้
-    for model_name in MODELS_TO_TRY:
-        try:
-            print(f"Attempting to generate response using: {model_name}")
-            response = ai_client.models.generate_content(
-                model=model_name,
-                contents=user_message,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
+    # คำสั่งพิเศษ: ขอสรุปรายสัปดาห์
+    if "สรุปสัปดาห์" in user_message or "สรุปรายสัปดาห์" in user_message:
+        ai_reply = generate_weekly_summary(user_id)
+    else:
+        # แอบบันทึกข้อมูลสุขภาพเข้า DB แบบเบื้องหลัง
+        extract_and_save_health_data(user_id, user_message)
+
+        # ตอบกลับแชทปกติ
+        for model_name in MODELS_TO_TRY:
+            try:
+                response = ai_client.models.generate_content(
+                    model=model_name,
+                    contents=user_message,
+                    config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT)
                 )
-            )
-            ai_reply = response.text
-            print(f"Success with {model_name}!")
-            break
-        except Exception as e:
-            print(f"Model {model_name} error: {e}. Falling back to next model...")
-            continue
+                ai_reply = response.text
+                break
+            except Exception as e:
+                continue
 
     if not ai_reply:
-        ai_reply = "ขออภัยด้วยครับ ขณะนี้ระบบ AI ปิดปรับปรุงชั่วคราว หรือโควตาเต็ม กรุณาลองใหม่อีกครั้งในภายหลัง"
+        ai_reply = "ขออภัยด้วยครับ ไม่สามารถประมวลผลได้ในขณะนี้"
 
-    # ส่งคำตอบกลับ LINE
     with ApiClient(line_config) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
