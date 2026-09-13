@@ -31,7 +31,7 @@ supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# อัปเดตรายชื่อโมเดลล่าสุด
+# อัปเดตรายชื่อโมเดลล่าสุดตามระบบปัจจุบัน
 MODELS_TO_TRY = ['gemini-3.6-flash', 'gemini-3.5-flash-lite']
 
 SYSTEM_PROMPT = """
@@ -99,7 +99,7 @@ def handle_text_message(event):
     if "สรุปสัปดาห์" in user_message or "สรุปรายสัปดาห์" in user_message:
         ai_reply = generate_weekly_summary(user_id)
     else:
-        # ยิง Gemini เพียง 1 ครั้งเพื่อดึงทั้งคำตอบและข้อมูลสุขภาพ
+        # รวมการดึงข้อมูลและตอบกลับใน API Call เดียวเพื่อประหยัด Quota 50%
         for model_name in MODELS_TO_TRY:
             try:
                 response = ai_client.models.generate_content(
@@ -113,7 +113,7 @@ def handle_text_message(event):
                 res_data = json.loads(response.text)
                 ai_reply = res_data.get("reply_text")
 
-                # บันทึกลง Supabase หากมีข้อมูลสุขภาพ
+                # บันทึกลง Supabase เมื่อมีข้อมูลสุขภาพ
                 if supabase and any([res_data.get('sleep_hours'), res_data.get('exercise_minutes'), res_data.get('stress_level')]):
                     log_data = {
                         "user_id": user_id,
@@ -123,7 +123,7 @@ def handle_text_message(event):
                         "notes": res_data.get('notes')
                     }
                     supabase.table('health_logs').insert(log_data).execute()
-                    print(f"Saved log for {user_id}")
+                    print(f"Saved health log for {user_id}")
                 break
             except Exception as e:
                 print(f"Model {model_name} error: {e}")
