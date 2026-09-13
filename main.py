@@ -35,59 +35,26 @@ load_dotenv()
 
 app = FastAPI()
 
-
-LINE_CHANNEL_ACCESS_TOKEN = os.environ.get(
-    "LINE_CHANNEL_ACCESS_TOKEN",
-    ""
-)
-
-LINE_CHANNEL_SECRET = os.environ.get(
-    "LINE_CHANNEL_SECRET",
-    ""
-)
-
-GEMINI_API_KEY = os.environ.get(
-    "GEMINI_API_KEY",
-    ""
-)
-
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    ""
-)
-
-SUPABASE_KEY = os.environ.get(
-    "SUPABASE_KEY",
-    ""
-)
+LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 
 # =========================================================
 # LINE SETUP
 # =========================================================
 
-line_config = Configuration(
-    access_token=LINE_CHANNEL_ACCESS_TOKEN
-)
-
-handler = WebhookHandler(
-    LINE_CHANNEL_SECRET
-    if LINE_CHANNEL_SECRET
-    else "dummy_secret"
-)
+line_config = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(LINE_CHANNEL_SECRET if LINE_CHANNEL_SECRET else "dummy_secret")
 
 
 # =========================================================
 # GEMINI SETUP
 # =========================================================
 
-ai_client = (
-    genai.Client(
-        api_key=GEMINI_API_KEY
-    )
-    if GEMINI_API_KEY
-    else None
-)
+ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 
 # =========================================================
@@ -97,56 +64,40 @@ ai_client = (
 supabase: Client = None
 
 if SUPABASE_URL and SUPABASE_KEY:
-
-    supabase = create_client(
-        SUPABASE_URL,
-        SUPABASE_KEY
-    )
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 # =========================================================
 # GEMINI MODEL
 # =========================================================
 
-# ใช้ model ที่ API ของนายท่านแนะนำ
 MODEL_NAME = "gemini-3.5-flash-lite"
 
 
 # =========================================================
-# SYSTEM PROMPT
+# CHECK TODAY LOG
 # =========================================================
 
-SYSTEM_PROMPT = """
-คุณคือ "หมอ DAI" ผู้ช่วยติดตามสุขภาพและพฤติกรรมการใช้ชีวิต
+def check_today_log_exists(user_id: str) -> bool:
+    """เช็คว่าวันนี้ผู้ใช้เคยบันทึกข้อมูลสุขภาพไปแล้วหรือยัง"""
+    if not supabase:
+        return False
 
-ตอบเป็น JSON เท่านั้น:
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
 
-{
-  "reply_text": "ข้อความตอบผู้ใช้",
-  "sleep_hours": null,
-  "exercise_minutes": null,
-  "stress_level": null,
-  "mood": null,
-  "water_ml": null,
-  "notes": null
-}
-
-กฎ:
-- ตอบสั้น กระชับ เป็นมิตร
-- ใช้ภาษาเดียวกับผู้ใช้
-- ภาษาไทยลงท้ายด้วย "ค่ะ"
-- ให้คำแนะนำสุขภาพทั่วไป ห้ามวินิจฉัยโรค
-- ห้ามสร้างข้อมูลที่ผู้ใช้ไม่ได้บอก
-- คำถามทั่วไปไม่ต้องบันทึกข้อมูล
-- sleep_hours = ชั่วโมงนอน 0-24
-- exercise_minutes = นาทีออกกำลังกาย 0-1440
-- stress_level = 1-10
-- water_ml = ปริมาณน้ำเป็น ml
-- mood = อารมณ์
-- notes = ข้อมูลสุขภาพอื่นที่สำคัญ
-- ถ้าไม่มีข้อมูลให้ใช้ null
-- ห้ามใช้ Markdown
-"""
+    try:
+        response = (
+            supabase
+            .table("health_logs")
+            .select("id")
+            .eq("user_id", user_id)
+            .gte("created_at", today_start)
+            .execute()
+        )
+        return len(response.data) > 0
+    except Exception as e:
+        print(f"Check today log error: {e}")
+        return False
 
 
 # =========================================================
@@ -154,7 +105,6 @@ SYSTEM_PROMPT = """
 # =========================================================
 
 def clean_health_data(data: dict) -> dict:
-
     result = {
         "sleep_hours": None,
         "exercise_minutes": None,
@@ -164,104 +114,54 @@ def clean_health_data(data: dict) -> dict:
         "notes": None
     }
 
-    # -----------------------------------------------------
     # SLEEP
-    # -----------------------------------------------------
-
     sleep = data.get("sleep_hours")
-
     if sleep is not None:
-
         try:
-
             sleep = float(sleep)
-
             if 0 <= sleep <= 24:
-
                 result["sleep_hours"] = sleep
-
         except (ValueError, TypeError):
-
             pass
 
-    # -----------------------------------------------------
     # EXERCISE
-    # -----------------------------------------------------
-
     exercise = data.get("exercise_minutes")
-
     if exercise is not None:
-
         try:
-
             exercise = int(exercise)
-
             if 0 <= exercise <= 1440:
-
                 result["exercise_minutes"] = exercise
-
         except (ValueError, TypeError):
-
             pass
 
-    # -----------------------------------------------------
     # STRESS
-    # -----------------------------------------------------
-
     stress = data.get("stress_level")
-
     if stress is not None:
-
         try:
-
             stress = int(stress)
-
             if 1 <= stress <= 10:
-
                 result["stress_level"] = stress
-
         except (ValueError, TypeError):
-
             pass
 
-    # -----------------------------------------------------
     # MOOD
-    # -----------------------------------------------------
-
     mood = data.get("mood")
-
     if mood:
-
         result["mood"] = str(mood)[:200]
 
-    # -----------------------------------------------------
     # WATER
-    # -----------------------------------------------------
-
     water = data.get("water_ml")
-
     if water is not None:
-
         try:
-
             water = int(water)
-
             if 0 <= water <= 20000:
-
                 result["water_ml"] = water
-
         except (ValueError, TypeError):
-
             pass
 
-    # -----------------------------------------------------
     # NOTES
-    # -----------------------------------------------------
-
     notes = data.get("notes")
-
     if notes:
-
         result["notes"] = str(notes)[:2000]
 
     return result
@@ -272,7 +172,6 @@ def clean_health_data(data: dict) -> dict:
 # =========================================================
 
 def contains_health_data(data: dict) -> bool:
-
     fields = [
         "sleep_hours",
         "exercise_minutes",
@@ -281,44 +180,22 @@ def contains_health_data(data: dict) -> bool:
         "water_ml",
         "notes"
     ]
-
-    return any(
-        data.get(field) is not None
-        for field in fields
-    )
+    return any(data.get(field) is not None for field in fields)
 
 
 # =========================================================
 # SAVE HEALTH LOG
 # =========================================================
 
-def save_health_log(
-    user_id: str,
-    data: dict
-):
-
+def save_health_log(user_id: str, data: dict):
     if not supabase:
-
-        print(
-            "Supabase is not configured."
-        )
-
+        print("Supabase is not configured.")
         return False
 
-    cleaned = clean_health_data(
-        data
-    )
+    cleaned = clean_health_data(data)
 
     if not contains_health_data(cleaned):
-
         return False
-
-    # -----------------------------------------------------
-    # ใช้โครงสร้างเดิมที่นายท่านใช้อยู่
-    #
-    # ไม่เพิ่ม mood / water_ml เข้า DB
-    # เพื่อไม่ไปเปลี่ยน schema เดิม
-    # -----------------------------------------------------
 
     log_data = {
         "user_id": user_id,
@@ -329,24 +206,11 @@ def save_health_log(
     }
 
     try:
-
-        supabase \
-            .table("health_logs") \
-            .insert(log_data) \
-            .execute()
-
-        print(
-            f"Saved health log for {user_id}"
-        )
-
+        supabase.table("health_logs").insert(log_data).execute()
+        print(f"Saved health log for {user_id}")
         return True
-
     except Exception as e:
-
-        print(
-            f"Supabase save error: {e}"
-        )
-
+        print(f"Supabase save error: {e}")
         return False
 
 
@@ -354,53 +218,54 @@ def save_health_log(
 # ASK GEMINI
 # =========================================================
 
-def ask_gemini(
-    user_message: str
-):
-
+def ask_gemini(user_message: str, has_logged_today: bool):
     if not ai_client:
-
-        print(
-            "Gemini client is not configured."
-        )
-
+        print("Gemini client is not configured.")
         return None
 
+    if has_logged_today:
+        asking_rule = "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพเรียบร้อยแล้ว** -> ตอบรับอย่างเป็นมิตร คอยให้คำแนะนำ ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก"
+    else:
+        asking_rule = "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพ** -> หากผู้ใช้คุยทั่วไป ให้ตอบรับอย่างเป็นมิตรพร้อมชวนคุยถามถึงการนอน ออกกำลังกาย หรือความเครียด เพื่อกระตุ้นให้บันทึกข้อมูล"
+
+    dynamic_system_prompt = f"""
+คุณคือ "หมอ DAI" ผู้ช่วยติดตามสุขภาพและพฤติกรรมการใช้ชีวิต
+
+ตอบเป็น JSON เท่านั้น:
+{{
+  "reply_text": "ข้อความตอบผู้ใช้",
+  "sleep_hours": null,
+  "exercise_minutes": null,
+  "stress_level": null,
+  "mood": null,
+  "water_ml": null,
+  "notes": null
+}}
+
+กฎ:
+- ตอบสั้น กระชับ เป็นมิตร ใช้ภาษาเดียวกับผู้ใช้ (ภาษาไทยลงท้ายด้วย "ค่ะ")
+- ให้คำแนะนำสุขภาพทั่วไป ห้ามวินิจฉัยโรค
+- ห้ามสร้างข้อมูลที่ผู้ใช้ไม่ได้บอก (ถ้าไม่มีให้ใช้ null)
+- sleep_hours = 0-24, exercise_minutes = 0-1440, stress_level = 1-10
+{asking_rule}
+- ห้ามใช้ Markdown ในส่วน reply_text
+"""
+
     try:
-
         response = ai_client.models.generate_content(
-
             model=MODEL_NAME,
-
             contents=user_message,
-
             config=types.GenerateContentConfig(
-
-                system_instruction=SYSTEM_PROMPT,
-
+                system_instruction=dynamic_system_prompt,
                 response_mime_type="application/json",
-
-                # จำกัด output เพื่อประหยัด token
                 max_output_tokens=250
             )
         )
-
         text = response.text.strip()
-
-        print(
-            f"Gemini response: {text}"
-        )
-
-        data = json.loads(text)
-
-        return data
-
+        print(f"Gemini response: {text}")
+        return json.loads(text)
     except Exception as e:
-
-        print(
-            f"Gemini {MODEL_NAME} error: {e}"
-        )
-
+        print(f"Gemini {MODEL_NAME} error: {e}")
         return None
 
 
@@ -408,160 +273,70 @@ def ask_gemini(
 # WEEKLY SUMMARY
 # =========================================================
 
-def generate_weekly_summary(
-    user_id: str
-) -> str:
-
+def generate_weekly_summary(user_id: str) -> str:
     if not supabase:
-
-        return (
-            "ตอนนี้ระบบฐานข้อมูลยังไม่พร้อมใช้งานค่ะ"
-        )
+        return "ตอนนี้ระบบฐานข้อมูลยังไม่พร้อมใช้งานค่ะ"
 
     if not ai_client:
+        return "ตอนนี้ระบบ AI ยังไม่พร้อมใช้งานค่ะ"
 
-        return (
-            "ตอนนี้ระบบ AI ยังไม่พร้อมใช้งานค่ะ"
-        )
-
-    # -----------------------------------------------------
-    # 7 DAYS AGO
-    # -----------------------------------------------------
-
-    seven_days_ago = (
-        datetime.now()
-        - timedelta(days=7)
-    ).isoformat()
+    seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
 
     try:
-
-        # -------------------------------------------------
-        # ดึงเฉพาะ column ที่ต้องใช้
-        # -------------------------------------------------
-
+        # แก้ไขจุดเลือกคอลัมน์ ห้ามมี space หลัง comma
         response = (
             supabase
             .table("health_logs")
-            .select(
-                "created_at,"
-                "sleep_hours,"
-                "exercise_minutes,"
-                "stress_level,"
-                "notes"
-            )
-            .eq(
-                "user_id",
-                user_id
-            )
-            .gte(
-                "created_at",
-                seven_days_ago
-            )
+            .select("created_at,sleep_hours,exercise_minutes,stress_level,notes")
+            .eq("user_id", user_id)
+            .gte("created_at", seven_days_ago)
+            .order("created_at", desc=True)
             .execute()
         )
 
         logs = response.data
 
-        # -------------------------------------------------
-        # ไม่มีข้อมูล
-        # -------------------------------------------------
-
         if not logs:
-
             return (
                 "ยังไม่มีข้อมูลสุขภาพย้อนหลัง 7 วันค่ะ\n"
-                "ลองบอกหมอ DAI เรื่องการนอน "
-                "การออกกำลังกาย หรือความเครียด "
-                "ได้เลยนะคะ"
+                "ลองบอกหมอ DAI เรื่องการนอน การออกกำลังกาย หรือความเครียด ได้เลยนะคะ"
             )
 
-        # -------------------------------------------------
-        # จำกัดจำนวนข้อมูล
-        # -------------------------------------------------
-
-        logs = logs[-30:]
-
-        # -------------------------------------------------
-        # ลดขนาด JSON ก่อนส่ง AI
-        # -------------------------------------------------
+        logs = logs[:30]
 
         compact_logs = []
-
         for log in logs:
-
             compact_logs.append({
-
-                "date": log.get(
-                    "created_at"
-                ),
-
-                "sleep": log.get(
-                    "sleep_hours"
-                ),
-
-                "exercise": log.get(
-                    "exercise_minutes"
-                ),
-
-                "stress": log.get(
-                    "stress_level"
-                ),
-
-                "notes": log.get(
-                    "notes"
-                )
+                "date": log.get("created_at"),
+                "sleep": log.get("sleep_hours"),
+                "exercise": log.get("exercise_minutes"),
+                "stress": log.get("stress_level"),
+                "notes": log.get("notes")
             })
 
-        # -------------------------------------------------
-        # Prompt สั้น
-        # -------------------------------------------------
-
         prompt = (
-            "สรุปสุขภาพ 7 วันจากข้อมูลนี้ "
-            "ให้สั้น อ่านง่าย และให้คำแนะนำทั่วไป "
-            "2-3 ข้อ ห้ามวินิจฉัยโรค:\n"
-            +
-            json.dumps(
-                compact_logs,
-                ensure_ascii=False,
-                separators=(",", ":")
-            )
+            "สรุปสุขภาพ 7 วันจากข้อมูลนี้ ให้สั้น อ่านง่าย และให้คำแนะนำทั่วไป 2-3 ข้อ ห้ามวินิจฉัยโรค:\n"
+            + json.dumps(compact_logs, ensure_ascii=False, separators=(",", ":"))
         )
 
         response = ai_client.models.generate_content(
-
             model=MODEL_NAME,
-
             contents=prompt,
-
             config=types.GenerateContentConfig(
-
                 max_output_tokens=300
             )
         )
 
         summary = response.text.strip()
 
-        # -------------------------------------------------
-        # LINE จำกัดความยาวข้อความ
-        # -------------------------------------------------
-
         if len(summary) > 4500:
-
             summary = summary[:4500]
 
         return summary
 
     except Exception as e:
-
-        print(
-            f"Weekly summary error: {e}"
-        )
-
-        return (
-            "เกิดข้อผิดพลาดในการสร้าง "
-            "สรุปสุขภาพค่ะ"
-        )
+        print(f"Weekly summary error: {e}")
+        return "เกิดข้อผิดพลาดในการสร้างสรุปสุขภาพค่ะ"
 
 
 # =========================================================
@@ -572,7 +347,6 @@ def generate_weekly_summary(
 @app.get("/callback")
 @app.get("/webhook")
 async def health_check():
-
     return {
         "status": "ok",
         "message": "หมอ DAI Server is running!"
@@ -589,9 +363,7 @@ async def callback(
     request: Request,
     x_line_signature: str = Header(None)
 ):
-
     if not x_line_signature:
-
         raise HTTPException(
             status_code=400,
             detail="Missing x-line-signature header"
@@ -600,25 +372,17 @@ async def callback(
     body = await request.body()
 
     try:
-
         handler.handle(
             body.decode("utf-8"),
             x_line_signature
         )
-
     except InvalidSignatureError:
-
         raise HTTPException(
             status_code=400,
             detail="Invalid signature"
         )
-
     except Exception as e:
-
-        print(
-            f"Webhook error: {e}"
-        )
-
+        print(f"Webhook error: {e}")
         raise HTTPException(
             status_code=500,
             detail="Webhook error"
@@ -631,125 +395,54 @@ async def callback(
 # HANDLE TEXT MESSAGE
 # =========================================================
 
-@handler.add(
-    MessageEvent,
-    message=TextMessageContent
-)
+@handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
-
     user_id = event.source.user_id
-
-    user_message = (
-        event.message.text.strip()
-    )
-
+    user_message = event.message.text.strip()
     ai_reply = None
 
     # =====================================================
     # WEEKLY SUMMARY COMMAND
     # =====================================================
-
-    if (
-        "สรุปสัปดาห์" in user_message
-        or
-        "สรุปรายสัปดาห์" in user_message
-    ):
-
-        ai_reply = generate_weekly_summary(
-            user_id
-        )
+    if "สรุปสัปดาห์" in user_message or "สรุปรายสัปดาห์" in user_message:
+        ai_reply = generate_weekly_summary(user_id)
 
     # =====================================================
     # NORMAL MESSAGE
     # =====================================================
-
     else:
-
-        result = ask_gemini(
-            user_message
-        )
+        # เช็คข้อมูลย้อนหลังของวันนี้ก่อนส่ง Prompt ให้ AI
+        has_logged_today = check_today_log_exists(user_id)
+        result = ask_gemini(user_message, has_logged_today)
 
         if result:
-
-            # ---------------------------------------------
-            # ทำความสะอาดข้อมูล
-            # ---------------------------------------------
-
-            cleaned = clean_health_data(
-                result
-            )
-
-            # ---------------------------------------------
-            # บันทึกถ้ามีข้อมูลสุขภาพ
-            # ---------------------------------------------
-
-            if contains_health_data(
-                cleaned
-            ):
-
-                save_health_log(
-                    user_id,
-                    cleaned
-                )
-
-            # ---------------------------------------------
-            # ข้อความตอบผู้ใช้
-            # ---------------------------------------------
-
-            ai_reply = result.get(
-                "reply_text"
-            )
+            # หากมีข้อมูลสุขภาพ ให้บันทึกลง DB
+            save_health_log(user_id, result)
+            ai_reply = result.get("reply_text")
 
     # =====================================================
     # FALLBACK
     # =====================================================
-
     if not ai_reply:
-
-        ai_reply = (
-            "ขออภัยค่ะ ตอนนี้หมอ DAI "
-            "ประมวลผลไม่สำเร็จ "
-            "ลองส่งข้อความใหม่อีกครั้งนะคะ"
-        )
+        ai_reply = "ขออภัยค่ะ ตอนนี้หมอ DAI ประมวลผลไม่สำเร็จ ลองส่งข้อความใหม่อีกครั้งนะคะ"
 
     # =====================================================
     # LINE MESSAGE LIMIT
     # =====================================================
-
     if len(ai_reply) > 4900:
-
         ai_reply = ai_reply[:4900]
 
     # =====================================================
     # SEND REPLY
     # =====================================================
-
     try:
-
-        with ApiClient(
-            line_config
-        ) as api_client:
-
-            line_bot_api = MessagingApi(
-                api_client
-            )
-
+        with ApiClient(line_config) as api_client:
+            line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
-
                 ReplyMessageRequest(
-
                     reply_token=event.reply_token,
-
-                    messages=[
-                        TextMessage(
-                            text=ai_reply
-                        )
-                    ]
+                    messages=[TextMessage(text=ai_reply)]
                 )
             )
-
     except Exception as e:
-
-        print(
-            f"LINE reply error: {e}"
-        )
+        print(f"LINE reply error: {e}")
