@@ -1,4 +1,6 @@
-Flask
+fastapi
+uvicorn
 line-bot-sdk
 google-genai
-gunicorn
+python-dotenv
+supabase
