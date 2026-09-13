@@ -75,6 +75,31 @@ MODEL_NAME = "gemini-3.5-flash-lite"
 
 
 # =========================================================
+# GET USER PROFILE
+# =========================================================
+
+def get_user_profile(user_id: str) -> dict:
+    """ดึงข้อมูลโปรไฟล์ผู้ใช้จากตาราง users ใน Supabase"""
+    if not supabase:
+        return {}
+
+    try:
+        response = (
+            supabase
+            .table("users")
+            .select("age,gender,weight_kg,height_cm,medical_conditions")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if response.data and len(response.data) > 0:
+            return response.data[0]
+        return {}
+    except Exception as e:
+        print(f"Get user profile error: {e}")
+        return {}
+
+
+# =========================================================
 # CHECK TODAY LOG
 # =========================================================
 
@@ -218,18 +243,32 @@ def save_health_log(user_id: str, data: dict):
 # ASK GEMINI
 # =========================================================
 
-def ask_gemini(user_message: str, has_logged_today: bool):
+def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = None):
     if not ai_client:
         print("Gemini client is not configured.")
         return None
 
+    # สรุปโปรไฟล์เป็นข้อความใส่บริบท AI
+    profile_text = "ไม่ระบุ (ประเมินตามเกณฑ์ผู้ใหญ่ทั่วไป)"
+    if user_profile:
+        details = []
+        if user_profile.get("age"): details.append(f"อายุ {user_profile['age']} ปี")
+        if user_profile.get("gender"): details.append(f"เพศ {user_profile['gender']}")
+        if user_profile.get("weight_kg"): details.append(f"น้ำหนัก {user_profile['weight_kg']} กก.")
+        if user_profile.get("height_cm"): details.append(f"ส่วนสูง {user_profile['height_cm']} ซม.")
+        if user_profile.get("medical_conditions"): details.append(f"ข้อควรระวัง/โรคประจำตัว: {user_profile['medical_conditions']}")
+        if details:
+            profile_text = ", ".join(details)
+
     if has_logged_today:
         asking_rule = "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพเรียบร้อยแล้ว** -> ตอบรับอย่างเป็นมิตร คอยให้คำแนะนำ ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก"
     else:
-        asking_rule = "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพ** -> หากผู้ใช้คุยทั่วไป ให้ตอบรับอย่างเป็นมิตรพร้อมชวนคุยถามถึงการนอน ออกกำลังกาย หรือความเครียด เพื่อกระตุ้นให้บันทึกข้อมูล"
+        asking_rule = "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพ** -> ตอบรับอย่างเป็นมิตรพร้อมชวนคุยถามถึงการนอน ออกกำลังกาย หรือความเครียด เพื่อกระตุ้นให้บันทึกข้อมูล"
 
     dynamic_system_prompt = f"""
 คุณคือ "หมอ DAI" ผู้ช่วยติดตามสุขภาพและพฤติกรรมการใช้ชีวิต
+
+ข้อมูลโปรไฟล์ของผู้ใช้: [{profile_text}]
 
 ตอบเป็น JSON เท่านั้น:
 {{
@@ -243,6 +282,7 @@ def ask_gemini(user_message: str, has_logged_today: bool):
 }}
 
 กฎ:
+- นำข้อมูลโปรไฟล์ (อายุ เพศ น้ำหนัก ฯลฯ) มาปรับการวิเคราะห์และคำแนะนำสุขภาพให้เหมาะสมกับสรีระรายบุคคล
 - ตอบสั้น กระชับ เป็นมิตร ใช้ภาษาเดียวกับผู้ใช้ (ภาษาไทยลงท้ายด้วย "ค่ะ")
 - ให้คำแนะนำสุขภาพทั่วไป ห้ามวินิจฉัยโรค
 - ห้ามสร้างข้อมูลที่ผู้ใช้ไม่ได้บอก (ถ้าไม่มีให้ใช้ null)
@@ -258,7 +298,7 @@ def ask_gemini(user_message: str, has_logged_today: bool):
             config=types.GenerateContentConfig(
                 system_instruction=dynamic_system_prompt,
                 response_mime_type="application/json",
-                max_output_tokens=250
+                max_output_tokens=300
             )
         )
         text = response.text.strip()
@@ -283,7 +323,6 @@ def generate_weekly_summary(user_id: str) -> str:
     seven_days_ago = (datetime.now() - timedelta(days=7)).isoformat()
 
     try:
-        # แก้ไขจุดเลือกคอลัมน์ ห้ามมี space หลัง comma
         response = (
             supabase
             .table("health_logs")
@@ -411,12 +450,17 @@ def handle_text_message(event):
     # NORMAL MESSAGE
     # =====================================================
     else:
-        # เช็คข้อมูลย้อนหลังของวันนี้ก่อนส่ง Prompt ให้ AI
+        # 1. เช็คบันทึกประจำวันของวันนี้
         has_logged_today = check_today_log_exists(user_id)
-        result = ask_gemini(user_message, has_logged_today)
+        
+        # 2. ดึงข้อมูลโปรไฟล์ผู้ใช้
+        user_profile = get_user_profile(user_id)
+
+        # 3. ส่งข้อมูลให้ Gemini ประมวลผล
+        result = ask_gemini(user_message, has_logged_today, user_profile)
 
         if result:
-            # หากมีข้อมูลสุขภาพ ให้บันทึกลง DB
+            # 4. หากมีข้อมูลสุขภาพ ให้บันทึกลง DB
             save_health_log(user_id, result)
             ai_reply = result.get("reply_text")
 
