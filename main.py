@@ -113,11 +113,13 @@ def generate_weekly_summary(user_id: str) -> str:
 
 @app.get("/")
 @app.get("/callback")
+@app.get("/webhook")
 async def health_check():
-    """Endpoint สำหรับให้ Render หรือเบราว์เซอร์เช็คสถานะการทำงาน"""
+    """Endpoint สำหรับเช็คสถานะการทำงาน"""
     return {"status": "ok", "message": "CareBot Server is running!"}
 
 @app.post("/callback")
+@app.post("/webhook")
 async def callback(request: Request, x_line_signature: str = Header(None)):
     """รับ Webhook จาก LINE"""
     if not x_line_signature:
@@ -142,7 +144,7 @@ def handle_text_message(event):
     if "สรุปสัปดาห์" in user_message or "สรุปรายสัปดาห์" in user_message:
         ai_reply = generate_weekly_summary(user_id)
     else:
-        # แอบบันทึกข้อมูลสุขภาพลง Supabase แบบเบื้องหลัง
+        # บันทึกข้อมูลสุขภาพลง Supabase แบบเบื้องหลัง
         extract_and_save_health_data(user_id, user_message)
 
         # ตอบกลับแชตปกติด้วย Gemini
@@ -164,12 +166,12 @@ def handle_text_message(event):
     if not ai_reply:
         ai_reply = "ขออภัยด้วยครับ ขณะนี้ระบบประมวลผลติดขัด ชั่วคราว กรุณาลองใหม่อีกครั้ง"
 
-    # ส่งข้อความตอบกลับไปยัง LINE
+    # ส่งข้อความตอบกลับไปยัง LINE (แก้ไขชื่อตัวแปรเป็น reply_token แล้ว)
     with ApiClient(line_config) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
             ReplyMessageRequest(
-                replyToken=event.replyToken,
+                reply_token=event.reply_token,
                 messages=[TextMessage(text=ai_reply)]
             )
         )
