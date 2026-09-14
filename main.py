@@ -100,6 +100,56 @@ def get_user_profile(user_id: str) -> dict:
 
 
 # =========================================================
+# SAVE USER PROFILE (ตาราง users)
+# =========================================================
+
+def save_user_profile(user_id: str, profile_data: dict):
+    """บันทึกหรืออัปเดตโปรไฟล์ผู้ใช้ลงตาราง users"""
+    if not supabase or not profile_data:
+        return False
+
+    update_payload = {"user_id": user_id}
+
+    if profile_data.get("age") is not None:
+        try:
+            age = int(profile_data["age"])
+            if 0 < age < 150:
+                update_payload["age"] = age
+        except (ValueError, TypeError): pass
+
+    if profile_data.get("gender"):
+        update_payload["gender"] = str(profile_data["gender"])[:20]
+
+    if profile_data.get("weight_kg") is not None:
+        try:
+            weight = float(profile_data["weight_kg"])
+            if 0 < weight < 500:
+                update_payload["weight_kg"] = weight
+        except (ValueError, TypeError): pass
+
+    if profile_data.get("height_cm") is not None:
+        try:
+            height = float(profile_data["height_cm"])
+            if 0 < height < 300:
+                update_payload["height_cm"] = height
+        except (ValueError, TypeError): pass
+
+    if profile_data.get("medical_conditions"):
+        update_payload["medical_conditions"] = str(profile_data["medical_conditions"])[:500]
+
+    # บันทึกเฉพาะเมื่อมีข้อมูลโปรไฟล์อย่างน้อย 1 ฟิลด์
+    if len(update_payload) > 1:
+        try:
+            supabase.table("users").upsert(update_payload, on_conflict="user_id").execute()
+            print(f"Updated user profile for {user_id}: {update_payload}")
+            return True
+        except Exception as e:
+            print(f"Supabase update profile error: {e}")
+            return False
+    return False
+
+
+# =========================================================
 # CHECK TODAY LOG
 # =========================================================
 
@@ -146,8 +196,7 @@ def clean_health_data(data: dict) -> dict:
             sleep = float(sleep)
             if 0 <= sleep <= 24:
                 result["sleep_hours"] = sleep
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError): pass
 
     # EXERCISE
     exercise = data.get("exercise_minutes")
@@ -156,8 +205,7 @@ def clean_health_data(data: dict) -> dict:
             exercise = int(exercise)
             if 0 <= exercise <= 1440:
                 result["exercise_minutes"] = exercise
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError): pass
 
     # STRESS
     stress = data.get("stress_level")
@@ -166,8 +214,7 @@ def clean_health_data(data: dict) -> dict:
             stress = int(stress)
             if 1 <= stress <= 10:
                 result["stress_level"] = stress
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError): pass
 
     # MOOD
     mood = data.get("mood")
@@ -181,8 +228,7 @@ def clean_health_data(data: dict) -> dict:
             water = int(water)
             if 0 <= water <= 20000:
                 result["water_ml"] = water
-        except (ValueError, TypeError):
-            pass
+        except (ValueError, TypeError): pass
 
     # NOTES
     notes = data.get("notes")
@@ -209,7 +255,7 @@ def contains_health_data(data: dict) -> bool:
 
 
 # =========================================================
-# SAVE HEALTH LOG
+# SAVE HEALTH LOG (ตาราง health_logs)
 # =========================================================
 
 def save_health_log(user_id: str, data: dict):
@@ -235,7 +281,7 @@ def save_health_log(user_id: str, data: dict):
         print(f"Saved health log for {user_id}")
         return True
     except Exception as e:
-        print(f"Supabase save error: {e}")
+        print(f"Supabase save log error: {e}")
         return False
 
 
@@ -248,7 +294,7 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
         print("Gemini client is not configured.")
         return None
 
-    # สรุปโปรไฟล์เป็นข้อความใส่บริบท AI
+    # สรุปโปรไฟล์เดิมของผู้ใช้เพื่อแจ้ง AI
     profile_text = "ไม่ระบุ (ประเมินตามเกณฑ์ผู้ใหญ่ทั่วไป)"
     if user_profile:
         details = []
@@ -256,19 +302,19 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
         if user_profile.get("gender"): details.append(f"เพศ {user_profile['gender']}")
         if user_profile.get("weight_kg"): details.append(f"น้ำหนัก {user_profile['weight_kg']} กก.")
         if user_profile.get("height_cm"): details.append(f"ส่วนสูง {user_profile['height_cm']} ซม.")
-        if user_profile.get("medical_conditions"): details.append(f"ข้อควรระวัง/โรคประจำตัว: {user_profile['medical_conditions']}")
+        if user_profile.get("medical_conditions"): details.append(f"โรคประจำตัว/ข้อควรระวัง: {user_profile['medical_conditions']}")
         if details:
             profile_text = ", ".join(details)
 
     if has_logged_today:
-        asking_rule = "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพเรียบร้อยแล้ว** -> ตอบรับอย่างเป็นมิตร คอยให้คำแนะนำ ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก"
+        asking_rule = "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพประจำวันเรียบร้อยแล้ว** -> ตอบรับอย่างเป็นมิตร คอยให้คำแนะนำ ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก"
     else:
         asking_rule = "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพ** -> ตอบรับอย่างเป็นมิตรพร้อมชวนคุยถามถึงการนอน ออกกำลังกาย หรือความเครียด เพื่อกระตุ้นให้บันทึกข้อมูล"
 
     dynamic_system_prompt = f"""
 คุณคือ "หมอ DAI" ผู้ช่วยติดตามสุขภาพและพฤติกรรมการใช้ชีวิต
 
-ข้อมูลโปรไฟล์ของผู้ใช้: [{profile_text}]
+ข้อมูลโปรไฟล์ปัจจุบันของผู้ใช้: [{profile_text}]
 
 ตอบเป็น JSON เท่านั้น:
 {{
@@ -278,11 +324,20 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
   "stress_level": null,
   "mood": null,
   "water_ml": null,
-  "notes": null
+  "notes": null,
+  "user_profile_update": {{
+    "age": null,
+    "gender": null,
+    "weight_kg": null,
+    "height_cm": null,
+    "medical_conditions": null
+  }}
 }}
 
 กฎ:
-- นำข้อมูลโปรไฟล์ (อายุ เพศ น้ำหนัก ฯลฯ) มาปรับการวิเคราะห์และคำแนะนำสุขภาพให้เหมาะสมกับสรีระรายบุคคล
+- หากผู้ใช้ระบุหรือบอกข้อมูลส่วนบุคคล (เช่น อายุ, เพศ, น้ำหนัก, ส่วนสูง, โรคประจำตัว) ให้สกัดใส่ใน user_profile_update ทันที
+- หากผู้ใช้บอกข้อมูลสุขภาพประจำวัน (นอน, ออกกำลังกาย, ความเครียด, น้ำ, อารมณ์) ให้สกัดใส่ฟิลด์หลัก (sleep_hours, exercise_minutes ฯลฯ)
+- นำข้อมูลโปรไฟล์มาปรับคำแนะนำสุขภาพให้เหมาะสมกับสรีระของผู้ใช้
 - ตอบสั้น กระชับ เป็นมิตร ใช้ภาษาเดียวกับผู้ใช้ (ภาษาไทยลงท้ายด้วย "ค่ะ")
 - ให้คำแนะนำสุขภาพทั่วไป ห้ามวินิจฉัยโรค
 - ห้ามสร้างข้อมูลที่ผู้ใช้ไม่ได้บอก (ถ้าไม่มีให้ใช้ null)
@@ -298,7 +353,7 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
             config=types.GenerateContentConfig(
                 system_instruction=dynamic_system_prompt,
                 response_mime_type="application/json",
-                max_output_tokens=300
+                max_output_tokens=350
             )
         )
         text = response.text.strip()
@@ -450,18 +505,23 @@ def handle_text_message(event):
     # NORMAL MESSAGE
     # =====================================================
     else:
-        # 1. เช็คบันทึกประจำวันของวันนี้
+        # 1. เช็คข้อมูลประจำวันของวันนี้
         has_logged_today = check_today_log_exists(user_id)
         
         # 2. ดึงข้อมูลโปรไฟล์ผู้ใช้
         user_profile = get_user_profile(user_id)
 
-        # 3. ส่งข้อมูลให้ Gemini ประมวลผล
+        # 3. ให้ Gemini วิเคราะห์ข้อความ
         result = ask_gemini(user_message, has_logged_today, user_profile)
 
         if result:
-            # 4. หากมีข้อมูลสุขภาพ ให้บันทึกลง DB
+            # 4.1 บันทึก Log สุขภาพประจำวัน (ลงตาราง health_logs)
             save_health_log(user_id, result)
+
+            # 4.2 บันทึก/อัปเดต โปรไฟล์ส่วนบุคคล (ลงตาราง users)
+            if "user_profile_update" in result and result["user_profile_update"]:
+                save_user_profile(user_id, result["user_profile_update"])
+
             ai_reply = result.get("reply_text")
 
     # =====================================================
