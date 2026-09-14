@@ -137,7 +137,6 @@ def save_user_profile(user_id: str, profile_data: dict):
     if profile_data.get("medical_conditions"):
         update_payload["medical_conditions"] = str(profile_data["medical_conditions"])[:500]
 
-    # บันทึกเฉพาะเมื่อมีข้อมูลโปรไฟล์อย่างน้อย 1 ฟิลด์
     if len(update_payload) > 1:
         try:
             supabase.table("users").upsert(update_payload, on_conflict="user_id").execute()
@@ -294,22 +293,46 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
         print("Gemini client is not configured.")
         return None
 
-    # สรุปโปรไฟล์เดิมของผู้ใช้เพื่อแจ้ง AI
-    profile_text = "ไม่ระบุ (ประเมินตามเกณฑ์ผู้ใหญ่ทั่วไป)"
+    # 1. เช็กว่าผู้ใช้ขาดข้อมูลโปรไฟล์ส่วนไหนบ้าง
+    missing_profile = []
+    if not user_profile:
+        missing_profile = ["อายุ", "เพศ", "น้ำหนัก", "ส่วนสูง"]
+    else:
+        if not user_profile.get("age"): missing_profile.append("อายุ")
+        if not user_profile.get("gender"): missing_profile.append("เพศ")
+        if not user_profile.get("weight_kg"): missing_profile.append("น้ำหนัก")
+        if not user_profile.get("height_cm"): missing_profile.append("ส่วนสูง")
+
+    # สรุปโปรไฟล์เดิมของผู้ใช้
+    profile_text = "ไม่ระบุ"
     if user_profile:
         details = []
         if user_profile.get("age"): details.append(f"อายุ {user_profile['age']} ปี")
         if user_profile.get("gender"): details.append(f"เพศ {user_profile['gender']}")
         if user_profile.get("weight_kg"): details.append(f"น้ำหนัก {user_profile['weight_kg']} กก.")
         if user_profile.get("height_cm"): details.append(f"ส่วนสูง {user_profile['height_cm']} ซม.")
-        if user_profile.get("medical_conditions"): details.append(f"โรคประจำตัว/ข้อควรระวัง: {user_profile['medical_conditions']}")
+        if user_profile.get("medical_conditions"): details.append(f"โรคประจำตัว: {user_profile['medical_conditions']}")
         if details:
             profile_text = ", ".join(details)
 
+    # 2. กำหนดลำดับการสนทนาให้ชัดเจน ไม่สับสน
     if has_logged_today:
-        asking_rule = "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพประจำวันเรียบร้อยแล้ว** -> ตอบรับอย่างเป็นมิตร คอยให้คำแนะนำ ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก"
+        conversation_guideline = (
+            "- วันนี้ผู้ใช้ **บันทึกข้อมูลสุขภาพประจำวันเรียบร้อยแล้ว**\n"
+            "- หน้าที่ของคุณ: ตอบรับอย่างเป็นมิตร ให้คำแนะนำสุขภาพที่เป็นประโยชน์ ชวนคุยทั่วไป **ห้ามถามชวนบันทึกข้อมูลสุขภาพซ้ำอีก**"
+        )
     else:
-        asking_rule = "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพ** -> ตอบรับอย่างเป็นมิตรพร้อมชวนคุยถามถึงการนอน ออกกำลังกาย หรือความเครียด เพื่อกระตุ้นให้บันทึกข้อมูล"
+        if missing_profile:
+            missing_str = ", ".join(missing_profile)
+            conversation_guideline = (
+                f"- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพประจำวัน** (และยังมีข้อมูลโปรไฟล์บางส่วนที่ยังไม่ระบุ ได้แก่: {missing_str})\n"
+                f"- หน้าที่ของคุณ: ขอบคุณ/รับทราบข้อมูลที่ได้รับ แล้ว **ถามชวนบันทึกข้อมูลสุขภาพประจำวันทันที (เช่น เมื่อคืนนอนกี่ชั่วโมง หรือได้ออกกำลังกายไหม)** โดยสามารถถามต่อถึงข้อมูลโปรไฟล์ที่ยังขาด ({missing_str}) แบบนุ่มนวลควบคู่ไปด้วยได้เพียง 1 ข้อ"
+            )
+        else:
+            conversation_guideline = (
+                "- วันนี้ผู้ใช้ **ยังไม่ได้บันทึกข้อมูลสุขภาพประจำวัน** (มีข้อมูลโปรไฟล์ครบถ้วนแล้ว)\n"
+                "- หน้าที่ของคุณ: ชวนคุยถามถึงข้อมูลสุขภาพประจำวันอย่างเป็นมิตร (เรื่องเวลานอน การออกกำลังกาย ปริมาณน้ำ หรือความเครียด) เพื่อกระตุ้นให้ผู้ใช้บันทึกข้อมูล"
+            )
 
     dynamic_system_prompt = f"""
 คุณคือ "หมอ DAI" ผู้ช่วยติดตามสุขภาพและพฤติกรรมการใช้ชีวิต
@@ -334,16 +357,14 @@ def ask_gemini(user_message: str, has_logged_today: bool, user_profile: dict = N
   }}
 }}
 
-กฎ:
-- หากผู้ใช้ระบุหรือบอกข้อมูลส่วนบุคคล (เช่น อายุ, เพศ, น้ำหนัก, ส่วนสูง, โรคประจำตัว) ให้สกัดใส่ใน user_profile_update ทันที
-- หากผู้ใช้บอกข้อมูลสุขภาพประจำวัน (นอน, ออกกำลังกาย, ความเครียด, น้ำ, อารมณ์) ให้สกัดใส่ฟิลด์หลัก (sleep_hours, exercise_minutes ฯลฯ)
-- หากว่ายังไม่ได้กรอกข้อมูลสุขภาพประจำวันให้ลองพยายามถามข้อมูลสุขภาพประจำวัน (นอน, ออกกำลังกาย, ความเครียด)
-- นำข้อมูลโปรไฟล์มาปรับคำแนะนำสุขภาพให้เหมาะสมกับสรีระของผู้ใช้
-- ตอบสั้น กระชับ เป็นมิตร ใช้ภาษาเดียวกับผู้ใช้ (ภาษาไทยลงท้ายด้วย "ค่ะ")
+กฎการสกัดข้อมูล:
+1. หากผู้ใช้ระบุข้อมูลส่วนบุคคล (อายุ, เพศ, น้ำหนัก, ส่วนสูง, โรคประจำตัว) ให้สกัดใส่ใน user_profile_update ทันที (ถ้าไม่มีใส่ null)
+2. หากผู้ใช้ระบุข้อมูลสุขภาพประจำวัน (นอนกี่ชั่วโมง, ออกกำลังกายกี่นาที, ความเครียด 1-10 ฯลฯ) ให้สกัดใส่ฟิลด์หลักทันที (ถ้าไม่มีใส่ null)
+
+แนวทางการตอบผู้ใช้ (reply_text):
+{conversation_guideline}
+- ตอบสั้น กระชับ เป็นมิตร ใช้ภาษาไทยลงท้ายด้วย "ค่ะ"
 - ให้คำแนะนำสุขภาพทั่วไป ห้ามวินิจฉัยโรค
-- ห้ามสร้างข้อมูลที่ผู้ใช้ไม่ได้บอก (ถ้าไม่มีให้ใช้ null)
-- sleep_hours = 0-24, exercise_minutes = 0-1440, stress_level = 1-10
-{asking_rule}
 - ห้ามใช้ Markdown ในส่วน reply_text
 """
 
